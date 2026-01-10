@@ -1,6 +1,0 @@
-Model,Fitz Bal Acc,DDI Bal Acc,Accuracy Drop,Fitz EO Gap,DDI EO Gap
-Baseline,0.8272,0.6347,19.2%,0.0918,0.3491
-Mixup,0.8561,0.6111,24.5%,0.1005,0.2803
-Reweighted,0.8261,0.6397,18.6%,0.0835,0.3491
-Focalloss,0.8266,0.6155,21.1%,0.0846,0.4105
-Proposed,0.8627,0.6061,25.7%,0.0714,0.2983
