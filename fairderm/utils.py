@@ -43,16 +43,20 @@ def compute_group_losses(criterion, outputs, labels, group_indices,
 
 
 def get_train_transforms(resize_size=260, crop_size=224):
-    # training transforms with augmentation
+    # training transforms with literature-validated augmentation
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
 
     return transforms.Compose([
         transforms.Resize((resize_size, resize_size)),
-        transforms.RandomCrop((crop_size, crop_size)),
+        # CenterCrop preserves lesion boundaries (ABCDE "B" criterion)
+        transforms.CenterCrop((crop_size, crop_size)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomVerticalFlip(p=0.5),
-        transforms.RandomRotation(20),
+        transforms.RandomRotation(90),
+        transforms.RandomAffine(degrees=0, scale=(0.9, 1.1)),
+        # ColorJitter WITHOUT hue - color is diagnostic (ABCDE "C" criterion)
+        # We use moderate 0.2
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
         transforms.ToTensor(),
         transforms.Normalize(mean=mean, std=std)
