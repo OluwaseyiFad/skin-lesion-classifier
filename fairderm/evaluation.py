@@ -113,6 +113,27 @@ def compute_fairness_metrics(y_true, y_pred, groups,
     return results
 
 
+def bootstrap_ci(values, n_bootstrap=10000, ci=0.95, statistic=np.mean, seed=0):
+    # Compute a bootstrap percentile confidence interval for a statistic.
+
+    values = np.asarray(values, dtype=float)
+    if len(values) == 0:
+        raise ValueError("bootstrap_ci requires at least one value")
+    if n_bootstrap < 1:
+        raise ValueError(f"n_bootstrap must be >= 1, got {n_bootstrap}")
+    if not (0.0 < ci < 1.0):
+        raise ValueError(f"ci must be in (0, 1), got {ci}")
+    rng = np.random.default_rng(seed)
+    boot_stats = np.array([
+        statistic(rng.choice(values, size=len(values), replace=True))
+        for _ in range(n_bootstrap)
+    ])
+    alpha = 1.0 - ci
+    ci_lower = float(np.percentile(boot_stats, 100 * alpha / 2))
+    ci_upper = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+    return float(statistic(values)), ci_lower, ci_upper
+
+
 def print_fairness_report(fairness_metrics):
     # nice formatted printout of fairness results
     print("\n" + "=" * 60)

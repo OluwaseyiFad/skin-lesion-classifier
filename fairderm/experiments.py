@@ -20,9 +20,7 @@ from .evaluation import (
 from .visualization import plot_training_history
 
 
-def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
-    # train and evaluate a single model with a specific config and seed
-
+def _set_random_seed(seed):
     # set all random seeds for reproducibility
     random.seed(seed)
     np.random.seed(seed)
@@ -32,6 +30,16 @@ def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
 
+
+def _worst_tpr(fairness):
+    tpr_per_group = fairness.get('tpr_per_group', {})
+    if not tpr_per_group:
+        return float('-inf')
+    return float(min(tpr_per_group.values()))
+
+
+def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=None):
+    # train and evaluate a single model with a specific config and seed
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -102,6 +110,75 @@ def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
     return results
 
 
+def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
+    # train and evaluate a single model with a specific config and seed
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    eta_sweep = config.get('groupdro_eta_sweep')
+    use_eta_sweep = bool(config.get('use_groupdro', False) and eta_sweep)
+
+    if not use_eta_sweep:
+        _set_random_seed(seed)
+        return _run_single_experiment(train_dataset, val_dataset, config, seed=seed, device=device)
+
+    eta_values = [float(eta) for eta in eta_sweep]
+    if len(eta_values) != 4:
+        raise ValueError(
+            f"GroupDRO eta sweep expects exactly 4 values, got {len(eta_values)}: {eta_values}"
+        )
+
+    print(f"\nRunning GroupDRO eta sweep with candidates: {eta_values}")
+    sweep_runs = []
+    sweep_results = {}
+
+    for eta in eta_values:
+        eta_config = copy.deepcopy(config)
+        eta_config.pop('groupdro_eta_sweep', None)
+        eta_config['groupdro_eta'] = eta
+        eta_config['name'] = f"{config['name']}_eta{eta:g}"
+
+        _set_random_seed(seed)
+        eta_result = _run_single_experiment(
+            train_dataset, val_dataset, eta_config, seed=seed, device=device
+        )
+        eta_worst_tpr = _worst_tpr(eta_result['fairness'])
+        eta_bal_acc = float(eta_result['overall']['balanced_accuracy'])
+
+        sweep_results[eta] = eta_result
+        sweep_runs.append({
+            'eta': eta,
+            'worst_tpr': eta_worst_tpr,
+            'balanced_accuracy': eta_bal_acc
+        })
+
+    # Selection rule: maximize worstTPR first, balanced accuracy second.
+    best_run = max(sweep_runs, key=lambda r: (r['worst_tpr'], r['balanced_accuracy']))
+    best_eta = best_run['eta']
+    best_result = sweep_results[best_eta]
+
+    selected_config = copy.deepcopy(best_result['config'])
+    selected_config['name'] = config['name']
+    selected_config['groupdro_eta'] = best_eta
+    selected_config['groupdro_eta_sweep'] = eta_values
+    best_result['config'] = selected_config
+    best_result['eta_sweep'] = {
+        'runs': sweep_runs,
+        'selected_eta': best_eta,
+        'selection_rule': 'max(worst_tpr), tie-break by max(balanced_accuracy)'
+    }
+
+    print("\nGroupDRO eta sweep summary:")
+    for run in sweep_runs:
+        print(
+            f"  eta={run['eta']:.6f} | worstTPR={run['worst_tpr']:.4f} | "
+            f"bal_acc={run['balanced_accuracy']:.4f}"
+        )
+    print(f"Selected eta: {best_eta:.6f}")
+
+    return best_result
+
+
 def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42],
                         save_dir=None, device=None):
     # run all configs with all seeds and collect results
@@ -125,6 +202,7 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
             comparison_data.append({
                 'name': config['name'],
                 'seed': seed,
+                'groupdro_eta': results['config'].get('groupdro_eta', None),
                 'accuracy': results['overall']['accuracy'],
                 'balanced_accuracy': results['overall']['balanced_accuracy'],
                 'roc_auc': results['overall'].get('roc_auc', None),
@@ -132,6 +210,7 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
                 'equal_opportunity_gap': results['fairness']['equal_opportunity_gap'],
                 'equalized_odds_gap': results['fairness']['equalized_odds_gap'],
                 'f1_gap': results['fairness']['f1_gap'],
+                'worst_tpr': _worst_tpr(results['fairness']),
                 'tpr_light': results['fairness']['tpr_per_group'].get('Light', None),
                 'tpr_medium': results['fairness']['tpr_per_group'].get('Medium', None),
                 'tpr_dark': results['fairness']['tpr_per_group'].get('Dark', None),
@@ -144,6 +223,12 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
                     results['model_state'],
                     os.path.join(save_dir, run_name, 'model.pt')
                 )
+                if 'eta_sweep' in results:
+                    sweep_df = pd.DataFrame(results['eta_sweep']['runs'])
+                    sweep_df.to_csv(
+                        os.path.join(save_dir, run_name, 'eta_sweep.csv'),
+                        index=False
+                    )
 
             # save training curves
             plot_training_history(

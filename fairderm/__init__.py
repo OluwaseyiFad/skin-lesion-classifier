@@ -9,7 +9,8 @@ from .evaluation import (
     compute_metrics,
     compute_group_metrics,
     compute_fairness_metrics,
-    print_fairness_report
+    print_fairness_report,
+    bootstrap_ci,
 )
 from .utils import (
     mixup_data, mixup_criterion, compute_group_losses,
@@ -21,6 +22,7 @@ from .configs import (
     get_reweighted_config,
     get_focal_config,
     get_proposed_config,
+    get_groupdro_config,
 )
 from .visualization import (
     plot_training_history, plot_fairness_comparison,

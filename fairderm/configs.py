@@ -68,3 +68,18 @@ def get_proposed_config():
         'alpha': 0.5  # 0=pure size, 1=pure loss
     })
     return config
+
+
+def get_groupdro_config():
+    # GroupDRO minimax objective over skin-tone groups
+    config = get_baseline_config()
+    config.update({
+        'name': 'GroupDRO',
+        'use_groupdro': True,
+        'groupdro_eta': 0.01,
+        'groupdro_eta_sweep': [0.001, 0.005, 0.01, 0.05],
+        'groupdro_groups': ['Light', 'Medium', 'Dark'],
+        'groupdro_stratified_batches': True,
+        'groupdro_uncovered_group_policy': 'erm'
+    })
+    return config
