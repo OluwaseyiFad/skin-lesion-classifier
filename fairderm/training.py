@@ -15,8 +15,6 @@ from .utils import mixup_data, mixup_criterion, compute_group_losses
 
 
 class GroupDROObjective:
-    # GroupDRO objective with exponential group-weight updates
-
     def __init__(self, groups=('Light', 'Medium', 'Dark'), eta=0.01,
                  group_name_to_idx=None, uncovered_group_policy='erm'):
         self.groups = list(groups)
@@ -74,7 +72,6 @@ class GroupDROObjective:
         else:
             uncovered_loss = None
 
-        # If this batch contains no configured groups, use explicit fallback policy.
         if not observed_mask.any():
             if self.uncovered_group_policy == 'error':
                 raise ValueError(
@@ -93,11 +90,8 @@ class GroupDROObjective:
             )
             self.q = self.q / self.q.sum().clamp_min(1e-12)
 
-        # Canonical robust objective uses the full simplex weights q.
-        # Missing groups contribute 0 this batch because no estimate is available.
         dro_loss = torch.dot(self.q, group_losses)
 
-        # Optional policy for samples outside configured groups (e.g., "Unknown").
         if uncovered_loss is not None:
             if self.uncovered_group_policy == 'erm':
                 uncovered_frac = uncovered_mask.float().mean()
@@ -119,7 +113,6 @@ class GroupDROObjective:
 
 
 def _compute_per_sample_losses(criterion, outputs, labels):
-    # GroupDRO needs unreduced per-sample losses
     if not hasattr(criterion, 'reduction'):
         raise ValueError(
             "GroupDRO requires a loss with a `reduction` attribute "
@@ -158,38 +151,32 @@ def _resolve_group_sample_indices(dataset, group_names):
         "or dataset.group_indices + dataset.group_to_idx."
     )
 
-class EarlyStopping:
-    # stops training when val loss stops improving for `patience` epochs
-    # keeps a copy of the best model weights and restores them at the end
 
+class EarlyStopping:
     def __init__(self, patience=10, min_delta=0.0, mode='min'):
         self.patience = patience
         self.min_delta = min_delta
-        self.mode = mode  # 'min' = lower is better (for loss)
+        self.mode = mode
         self.counter = 0
         self.best_score = None
         self.early_stop = False
         self.best_model_state = None
-        self.best_sampler_state = None  # also checkpoint sampler if using adaptive
+        self.best_sampler_state = None
 
     def __call__(self, score, model, sampler=None):
-        # flip sign if minimizing so we can always check for "higher is better"
         if self.mode == 'min':
             score = -score
 
         if self.best_score is None:
-            # first epoch - save as best
             self.best_score = score
             self.best_model_state = copy.deepcopy(model.state_dict())
             if sampler is not None:
                 self.best_sampler_state = sampler.get_state()
         elif score < self.best_score + self.min_delta:
-            # no improvement
             self.counter += 1
             if self.counter >= self.patience:
                 self.early_stop = True
         else:
-            # improvement! save new best
             self.best_score = score
             self.best_model_state = copy.deepcopy(model.state_dict())
             if sampler is not None:
@@ -206,15 +193,12 @@ def train_epoch(model, train_loader, criterion, optimizer, device,
                 use_mixup=False, mixup_alpha=0.4, adaptive_sampler=None,
                 group_dro_objective=None, train_dataset=None, batch_size=None,
                 groupdro_stratified_batches=False, groupdro_groups=None):
-    # single epoch of training
     model.train()
     running_loss = 0.0
     correct = 0
     total = 0
 
-    # figure out how many steps this epoch
     if adaptive_sampler is not None or groupdro_stratified_batches:
-        # with adaptive sampling, we generate batches on-the-fly
         if train_dataset is None or batch_size is None:
             raise ValueError(
                 "train_dataset and batch_size are required when using "
@@ -224,10 +208,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device,
     else:
         steps_per_epoch = len(train_loader)
 
-    # create data iterator
     if adaptive_sampler is not None:
-        # generate batches dynamically using current sampling weights
-        # this lets the sampler adapt between batches within an epoch
         def batch_generator():
             for _ in range(steps_per_epoch):
                 weights = adaptive_sampler.get_sample_weights()
@@ -262,7 +243,7 @@ def train_epoch(model, train_loader, criterion, optimizer, device,
             for _ in range(steps_per_epoch):
                 batch_indices = []
 
-                # Guarantee at least one sample from each present GroupDRO group.
+                # guarantee at least one sample from each group per batch
                 for group_name in present_groups:
                     indices = group_to_indices[group_name]
                     sampled_pos = torch.randint(0, len(indices), (1,)).item()
@@ -298,14 +279,12 @@ def train_epoch(model, train_loader, criterion, optimizer, device,
             _, predicted = outputs.max(1)
             correct += predicted.eq(labels).sum().item()
         elif use_mixup:
-            # mixup: blend pairs of images and compute blended loss
             mixed_images, labels_a, labels_b, lam = mixup_data(
                 images, labels, mixup_alpha
             )
             outputs = model(mixed_images)
             loss = mixup_criterion(criterion, outputs, labels_a, labels_b, lam)
 
-            # accuracy is approximate - weight by mixup lambda
             _, predicted = outputs.max(1)
             correct += (lam * predicted.eq(labels_a).sum().item() +
                         (1 - lam) * predicted.eq(labels_b).sum().item())
@@ -318,28 +297,23 @@ def train_epoch(model, train_loader, criterion, optimizer, device,
 
         total += labels.size(0)
 
-        # update adaptive sampler with per-group losses
         if adaptive_sampler is not None:
             if use_mixup:
-                # mixup blends images, but we need clean loss per group
-                # so we do an extra forward pass on unmixed images
-                # freeze batchnorm to avoid messing up running stats
+                # need clean (unmixed) outputs for per-group loss tracking
                 was_training = model.training
                 model.train()
                 bn_modules = []
                 for m in model.modules():
                     if isinstance(m, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
                         bn_modules.append(m)
-                        m.eval()  # freeze running stats
+                        m.eval()
                 with torch.no_grad():
                     clean_outputs = model(images)
-                # restore batchnorm to training mode
                 for m in bn_modules:
                     m.train()
                 if not was_training:
                     model.eval()
             else:
-                # no mixup - just reuse the outputs we already computed
                 clean_outputs = outputs.detach()
 
             group_losses = compute_group_losses(
@@ -363,13 +337,11 @@ def train_epoch(model, train_loader, criterion, optimizer, device,
 
 def validate_epoch(model, val_loader, criterion, device,
                    return_group_losses=False, groups=None, group_name_to_idx=None):
-    # run through validation set and collect predictions
     model.eval()
     running_loss = 0.0
     correct = 0
     total = 0
 
-    # collect everything for computing metrics later
     all_preds = []
     all_labels = []
     all_groups = []
@@ -415,7 +387,6 @@ def validate_epoch(model, val_loader, criterion, device,
     if not return_group_losses:
         return base
 
-    # compute mean loss per group from collected per-sample losses
     losses_arr = np.array(all_per_sample_losses)
     groups_arr = np.array(all_groups)
     group_losses = {}
@@ -435,11 +406,9 @@ def validate_epoch(model, val_loader, criterion, device,
 
 def train_model(model, train_dataset, val_dataset, config, adaptive_sampler=None,
                 device=None):
-    # full training loop with early stopping and lr scheduling
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # val loader is the same every epoch
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
@@ -448,27 +417,24 @@ def train_model(model, train_dataset, val_dataset, config, adaptive_sampler=None
         pin_memory=True
     )
 
-    # using AdamW - like Adam but with decoupled weight decay
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=config['learning_rate'],
         weight_decay=config.get('weight_decay', 0.01)
     )
 
-    # cosine annealing: lr starts high, decays smoothly to near zero
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=config['epochs'],
         eta_min=config['learning_rate'] * 0.01
     )
 
-    # make sure criterion is on the right device
     criterion = config['criterion']
     if hasattr(criterion, 'weight') and criterion.weight is not None:
         criterion.weight = criterion.weight.to(device)
     if isinstance(criterion, nn.Module):
         criterion = criterion.to(device)
-        
+
     use_groupdro = config.get('use_groupdro', False)
     if use_groupdro and (config.get('use_mixup', False) or adaptive_sampler is not None):
         raise ValueError("GroupDRO is configured as a standalone objective. Disable mixup/adaptive sampling.")
@@ -516,8 +482,6 @@ def train_model(model, train_dataset, val_dataset, config, adaptive_sampler=None
     for epoch in range(config['epochs']):
         print(f"\nEpoch {epoch + 1}/{config['epochs']}")
 
-        # with adaptive sampling, batches are generated on-the-fly in train_epoch
-        # so we don't need a DataLoader here
         if adaptive_sampler is not None or use_groupdro_stratified:
             train_loader = None
         else:
@@ -564,10 +528,9 @@ def train_model(model, train_dataset, val_dataset, config, adaptive_sampler=None
             )
             val_worst_group_loss = None
             val_worst_group_name = None
-        
+
         scheduler.step()
 
-        # record everything
         history['train_loss'].append(train_loss)
         history['train_acc'].append(train_acc)
         history['val_loss'].append(val_loss)
@@ -582,7 +545,6 @@ def train_model(model, train_dataset, val_dataset, config, adaptive_sampler=None
         if val_worst_group_loss is not None:
             print(f"Val Worst-Group Loss: {val_worst_group_loss:.4f} ({val_worst_group_name})")
 
-        # show current sampling probabilities if using adaptive
         if adaptive_sampler:
             stats = adaptive_sampler.get_statistics()
             probs = stats['sampling_probs']
@@ -592,15 +554,13 @@ def train_model(model, train_dataset, val_dataset, config, adaptive_sampler=None
             q = group_dro_objective.get_weights()
             q_str = ", ".join([f"{g}={w:.2f}" for g, w in q.items()])
             print(f"GroupDRO q: {q_str}")
-        
-        # check for early stopping
+
         early_stopping_score = val_worst_group_loss if val_worst_group_loss is not None else val_loss
         early_stopping(early_stopping_score, model, sampler=adaptive_sampler)
         if early_stopping.early_stop:
             print(f"\nEarly stopping at epoch {epoch + 1}")
             break
 
-    # restore best model from training
     early_stopping.load_best_model(model, sampler=adaptive_sampler)
     print("\nLoaded best model checkpoint")
 

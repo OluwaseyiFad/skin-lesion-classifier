@@ -5,7 +5,7 @@ from .losses import FocalLoss
 
 
 def get_baseline_config():
-    # vanilla cross-entropy, no fairness tricks
+    # vanilla cross-entropy
     return {
         'name': 'Baseline',
         'epochs': 50,
@@ -21,7 +21,6 @@ def get_baseline_config():
 
 
 def get_mixup_config():
-    # just mixup, no adaptive sampling
     config = get_baseline_config()
     config.update({
         'name': 'Mixup',
@@ -32,7 +31,6 @@ def get_mixup_config():
 
 
 def get_reweighted_config(class_weights, device=None):
-    # weight minority classes more in the loss
     config = get_baseline_config()
 
     if device is not None:
@@ -46,7 +44,6 @@ def get_reweighted_config(class_weights, device=None):
 
 
 def get_focal_config():
-    # focal loss - focuses on hard examples
     config = get_baseline_config()
     config.update({
         'name': 'FocalLoss',
@@ -55,23 +52,24 @@ def get_focal_config():
     return config
 
 
-def get_proposed_config():
-    # my method: adaptive sampling + mixup
+def get_ldas_config():
+    # loss-driven adaptive sampling: alpha=0.7, tau=2.0
     config = get_baseline_config()
     config.update({
-        'name': 'Proposed',
-        'use_mixup': True,
-        'mixup_alpha': 0.4,
+        'name': 'LDAS',
+        'use_mixup': False,
         'use_adaptive': True,
+        'alpha': 0.7,
+        'tau': 2.0,
+        'ema_decay': 0.9,
         'min_prob': 0.10,
+        'epsilon': 0.1,
         'size_weight_power': 0.7,
-        'alpha': 0.5  # 0=pure size, 1=pure loss
     })
     return config
 
 
 def get_groupdro_config():
-    # GroupDRO minimax objective over skin-tone groups
     config = get_baseline_config()
     config.update({
         'name': 'GroupDRO',

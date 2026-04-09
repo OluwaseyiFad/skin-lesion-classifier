@@ -21,7 +21,7 @@ from .configs import (
     get_mixup_config,
     get_reweighted_config,
     get_focal_config,
-    get_proposed_config,
+    get_ldas_config,
     get_groupdro_config,
 )
 from .visualization import (

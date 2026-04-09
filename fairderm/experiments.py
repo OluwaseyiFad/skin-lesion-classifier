@@ -1,5 +1,4 @@
 # running experiments and saving results
-# handles training multiple configs with multiple seeds
 
 import os
 import copy
@@ -21,7 +20,6 @@ from .visualization import plot_training_history
 
 
 def _set_random_seed(seed):
-    # set all random seeds for reproducibility
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -39,7 +37,6 @@ def _worst_tpr(fairness):
 
 
 def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=None):
-    # train and evaluate a single model with a specific config and seed
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -49,15 +46,14 @@ def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=N
 
     model = create_model(num_classes=2, pretrained=True, device=device)
 
-    # set up adaptive sampler if this config uses it
     adaptive_sampler = None
     if config.get('use_adaptive', False):
         adaptive_sampler = SkinToneAdaptiveSampler(
             train_dataset,
             groups=['Light', 'Medium', 'Dark'],
-            epsilon=0.1,
-            tau=1.0,
-            ema_decay=0.9,
+            epsilon=config.get('epsilon', 0.1),
+            tau=config.get('tau', 1.0),
+            ema_decay=config.get('ema_decay', 0.9),
             min_prob=config.get('min_prob', 0.10),
             size_weight_power=config.get('size_weight_power', 0.7),
             alpha=config.get('alpha', 0.5)
@@ -69,13 +65,11 @@ def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=N
         device=device
     )
 
-    # final evaluation on validation set
     val_loader = DataLoader(
         val_dataset,
         batch_size=config['batch_size'],
         shuffle=False
     )
-    # deepcopy criterion in case it has state we don't want to modify
     val_criterion = copy.deepcopy(config['criterion'])
     if isinstance(val_criterion, nn.Module):
         val_criterion = val_criterion.to(device)
@@ -84,7 +78,6 @@ def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=N
         model, val_loader, val_criterion, device
     )
 
-    # compute all the metrics
     overall = compute_metrics(labels, preds, probs)
     per_group = compute_group_metrics(labels, preds, groups, probs)
     fairness = compute_fairness_metrics(labels, preds, groups)
@@ -99,7 +92,6 @@ def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=N
         'adaptive_sampler': adaptive_sampler
     }
 
-    # print summary
     print(f"\n{config['name']} Results:")
     print(f"  Accuracy: {overall['accuracy']:.4f}")
     print(f"  Balanced Accuracy: {overall['balanced_accuracy']:.4f}")
@@ -111,7 +103,6 @@ def _run_single_experiment(train_dataset, val_dataset, config, seed=42, device=N
 
 
 def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
-    # train and evaluate a single model with a specific config and seed
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -152,7 +143,7 @@ def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
             'balanced_accuracy': eta_bal_acc
         })
 
-    # Selection rule: maximize worstTPR first, balanced accuracy second.
+    # maximize worst-group TPR first, balanced accuracy as tiebreak
     best_run = max(sweep_runs, key=lambda r: (r['worst_tpr'], r['balanced_accuracy']))
     best_eta = best_run['eta']
     best_result = sweep_results[best_eta]
@@ -181,7 +172,6 @@ def run_experiment(train_dataset, val_dataset, config, seed=42, device=None):
 
 def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42],
                         save_dir=None, device=None):
-    # run all configs with all seeds and collect results
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
@@ -198,7 +188,6 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
 
             all_results[run_name] = results
 
-            # collect metrics for comparison table
             comparison_data.append({
                 'name': config['name'],
                 'seed': seed,
@@ -216,7 +205,6 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
                 'tpr_dark': results['fairness']['tpr_per_group'].get('Dark', None),
             })
 
-            # save model checkpoint
             if save_dir:
                 os.makedirs(os.path.join(save_dir, run_name), exist_ok=True)
                 torch.save(
@@ -230,7 +218,6 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
                         index=False
                     )
 
-            # save training curves
             plot_training_history(
                 results['history'],
                 title=f'{run_name} Training History',
@@ -238,7 +225,6 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
                 if save_dir else None
             )
 
-            # free up GPU memory between runs
             del results['model_state']
             torch.cuda.empty_cache()
 
@@ -254,18 +240,14 @@ def run_all_experiments(train_dataset, val_dataset, train_df, configs, seeds=[42
 
 
 def save_experiment_results(results, run_name, save_dir):
-    # save everything to disk for later analysis
     run_dir = os.path.join(save_dir, run_name)
     os.makedirs(run_dir, exist_ok=True)
 
-    # model weights
     torch.save(results['model_state'], os.path.join(run_dir, 'model.pt'))
 
-    # training history as csv
     history_df = pd.DataFrame(results['history'])
     history_df.to_csv(os.path.join(run_dir, 'training_history.csv'), index=False)
 
-    # metrics as json (excluding confusion matrix which isn't json-serializable)
     metrics = {
         'overall': results['overall'],
         'fairness': results['fairness']
